@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kommunikationsplan-Agent</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1d2433; --muted: #667085;
+    --border: #d9dde3; --accent: #2457c5; --accent-weak: #e8eefb;
+    --tool: #6b4bb8; --tool-weak: #f1ecfb; --error: #b42318; --error-weak: #fdecea;
+    --changed: #fff4c2;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); display: flex; flex-direction: column; }
+
+  /* ---------- Kopfzeile: API-Key + Modell ---------- */
+  header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; }
+  header label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  header input { font: inherit; font-size: 14px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+  #apiKey { width: 280px; }
+  #model { width: 150px; }
+  .hint { font-size: 12px; color: var(--muted); }
+
+  /* ---------- Hauptbereich: Chat 1/3, Arbeitsbereich 2/3 ---------- */
+  main { flex: 1; display: grid; grid-template-columns: 1fr 2fr; gap: 12px; padding: 12px; min-height: 0; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; display: flex; flex-direction: column; min-height: 0; }
+  section > h2 { font-size: 14px; margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+
+  #chatLog { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .msg { padding: 8px 10px; border-radius: 8px; font-size: 14px; line-height: 1.4; white-space: pre-wrap; max-width: 95%; }
+  .msg.user { background: var(--accent-weak); align-self: flex-end; }
+  .msg.assistant { background: #f2f4f7; align-self: flex-start; }
+  .msg.tool { background: var(--tool-weak); color: var(--tool); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; align-self: flex-start; }
+  .msg.error { background: var(--error-weak); color: var(--error); align-self: stretch; }
+  .msg.info { color: var(--muted); font-size: 12.5px; align-self: center; text-align: center; }
+
+  #chatForm { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); }
+  #chatInput { flex: 1; font: inherit; font-size: 14px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; resize: none; height: 64px; }
+  button { font: inherit; font-size: 14px; border: 1px solid var(--accent); background: var(--accent); color: #fff; padding: 6px 14px; border-radius: 6px; cursor: pointer; }
+  button.secondary { background: #fff; color: var(--accent); font-size: 12.5px; padding: 4px 10px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .examples { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 10px 10px; }
+
+  #workspace { flex: 1; overflow: auto; padding: 14px; }
+  #planTitle { font-size: 18px; margin: 0 0 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f8f9fb; font-weight: 600; }
+  td.nr { width: 48px; text-align: center; }
+  td.changed { background: var(--changed); transition: background 1.5s; }
+  .empty { color: var(--muted); font-size: 14px; padding: 30px; text-align: center; border: 1px dashed var(--border); border-radius: 8px; }
+
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } #apiKey { width: 100%; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Kommunikationsplan-Agent</h1>
+  <!-- Bewusst KEIN <form>: so bietet der Browser seltener an, den Key zu speichern -->
+  <label>OpenAI-API-Key
+    <input id="apiKey" type="password" autocomplete="new-password" spellcheck="false" placeholder="sk-...">
+  </label>
+  <label>Modell
+    <input id="model" type="text" value="gpt-5-mini" spellcheck="false">
+  </label>
+  <span class="hint">Der Key bleibt nur im Arbeitsspeicher. Nach dem Neuladen der Seite ist er weg.</span>
+</header>
+
+<main>
+  <!-- ---------- LINKS: Chat ---------- -->
+  <section>
+    <h2>Chat</h2>
+    <div id="chatLog"></div>
+    <div class="examples">
+      <button class="secondary" data-example="1">Testauftrag 1 einfügen</button>
+      <button class="secondary" data-example="2">Testauftrag 2 einfügen</button>
+    </div>
+    <div id="chatForm">
+      <textarea id="chatInput" placeholder="Auftrag eingeben … (Enter = senden, Shift+Enter = neue Zeile)"></textarea>
+      <button id="sendBtn">Senden</button>
+    </div>
+  </section>
+
+  <!-- ---------- RECHTS: Arbeitsbereich mit Tabelle ---------- -->
+  <section>
+    <h2>Arbeitsbereich: Kommunikationsplan</h2>
+    <div id="workspace"></div>
+  </section>
+</main>
+
+<script>
+/* =====================================================================
+   1) DATEN: Die Tabelle als JavaScript-Objekt (Single Source of Truth)
+   ---------------------------------------------------------------------
+   Alles, was rechts angezeigt wird, kommt NUR aus diesem Objekt.
+   Die Tools ändern dieses Objekt, danach wird die Tabelle neu gezeichnet.
+   ===================================================================== */
+const plan = {
+  projekt_titel: "",
+  zeilen: []   // Jede Zeile: { nr, zielgruppe, kanal, zeitpunkt, botschaft }
+};
+
+const FELDER = ["zielgruppe", "kanal", "zeitpunkt", "botschaft"];
+const MAX_TOOL_AUFRUFE = 5;
+let zuletztGeaendert = { nr: null, felder: [] }; // nur für die gelbe Markierung
+
+/* =====================================================================
+   2) SYSTEMPROMPT für das Modell
+   ===================================================================== */
+const SYSTEMPROMPT = `Du bist ein Agent für die Kommunikationsplanung in HR-Change-Projekten.
+Achte besonders auf: zielgruppengerechte Botschaften, logische Reihenfolge (Führungskräfte und Betriebsrat früh einbinden, vor der Belegschaft), kurze Botschaften (maximal 2 Sätze), konkrete Kanäle (z. B. Townhall, Intranet, Teammeeting).
+Frage nur nach, wenn der Go-live-Zeitpunkt fehlt oder bei einer Änderung unklar ist, welche Zeile gemeint ist. Sonst triff eine Annahme und kennzeichne sie als Annahme.
+Du sollst nicht: Fakten erfinden (Namen, Zahlen, Termine), bei einer Einzeländerung den ganzen Plan neu schreiben, oder nur im Chat antworten, statt das passende Tool aufzurufen.
+
+Arbeitsregeln:
+- Ein neuer Plan hat 5 bis 8 Zeilen; alle Felder sind gefüllt. Nutze dafür plan_erstellen.
+- Zeitpunkt immer relativ zum Go-live, z. B. "Go-live − 4 Wochen", "Go-live", "Go-live + 2 Wochen".
+- Für Änderungen an bestehenden Zeilen nutze zeile_aendern und übergib nur die Felder, die sich ändern. Betrifft eine Änderung mehrere Zeilen, rufe zeile_aendern mehrmals auf.
+- Du bekommst mit jedem Auftrag die aktuelle Tabelle als JSON. Beziehe dich auf die Nr. aus dieser Tabelle.
+- Antworte nach dem Tool-Aufruf kurz (1–3 Sätze) auf Deutsch und nenne getroffene Annahmen ausdrücklich mit "Annahme:".`;
+
+/* =====================================================================
+   3) TOOLS: Beschreibung für das Modell (OpenAI Function Calling)
+   ===================================================================== */
+const TOOL_DEFINITIONEN = [
+  {
+    type: "function",
+    function: {
+      name: "plan_erstellen",
+      description: "Erstellt einen neuen Kommunikationsplan und ersetzt die gesamte Tabelle. Nur für einen neuen Plan verwenden, nicht für Einzeländerungen.",
+      parameters: {
+        type: "object",
+        properties: {
+          projekt_titel: { type: "string", description: "Kurzer Titel des Change-Projekts" },
+          zeilen: {
+            type: "array",
+            minItems: 5,
+            maxItems: 8,
+            description: "5 bis 8 Kommunikationsmaßnahmen in zeitlicher Reihenfolge",
+            items: {
+              type: "object",
+              properties: {
+                zielgruppe: { type: "string", description: "z. B. Führungskräfte, Betriebsrat, Mitarbeitende" },
+                kanal:      { type: "string", description: "Konkreter Kanal, z. B. Townhall, Intranet, Teammeeting" },
+                zeitpunkt:  { type: "string", description: "Relativ zum Go-live, z. B. 'Go-live − 4 Wochen'" },
+                botschaft:  { type: "string", description: "Kernbotschaft, maximal 2 Sätze" }
+              },
+              required: ["zielgruppe", "kanal", "zeitpunkt", "botschaft"]
+            }
+          }
+        },
+        required: ["projekt_titel", "zeilen"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "zeile_aendern",
+      description: "Ändert genau eine bestehende Zeile. Nur die übergebenen Felder werden geändert, alle anderen bleiben gleich.",
+      parameters: {
+        type: "object",
+        properties: {
+          nr:         { type: "integer", description: "Nr. der Zeile laut aktueller Tabelle" },
+          zielgruppe: { type: "string" },
+          kanal:      { type: "string" },
+          zeitpunkt:  { type: "string", description: "Relativ zum Go-live" },
+          botschaft:  { type: "string", description: "Maximal 2 Sätze" }
+        },
+        required: ["nr"]
+      }
+    }
+  }
+];
+
+/* =====================================================================
+   4) TOOLS: Was die App wirklich tut, wenn das Modell ein Tool aufruft
+   ---------------------------------------------------------------------
+   Rückgabe jeweils: { ergebnis: Text fürs Modell, chat: Text für die Chatzeile }
+   ===================================================================== */
+const TOOLS = {
+  plan_erstellen(args) {
+    const zeilen = Array.isArray(args.zeilen) ? args.zeilen : [];
+    if (zeilen.length < 5 || zeilen.length > 8) {
+      return fehler(`Der Plan muss 5 bis 8 Zeilen haben, übergeben wurden ${zeilen.length}. Bitte erneut mit 5 bis 8 Zeilen aufrufen.`);
+    }
+    for (let i = 0; i < zeilen.length; i++) {
+      const leer = FELDER.filter(f => !String(zeilen[i]?.[f] ?? "").trim());
+      if (leer.length) return fehler(`In Zeile ${i + 1} fehlen Felder: ${leer.join(", ")}. Bitte alle vier Felder füllen.`);
+    }
+    plan.projekt_titel = String(args.projekt_titel || "Kommunikationsplan").trim();
+    plan.zeilen = zeilen.map((z, i) => ({
+      nr: i + 1,
+      zielgruppe: String(z.zielgruppe).trim(),
+      kanal: String(z.kanal).trim(),
+      zeitpunkt: String(z.zeitpunkt).trim(),
+      botschaft: String(z.botschaft).trim()
+    }));
+    zuletztGeaendert = { nr: null, felder: [] };
+    renderTabelle();
+    const text = `Plan mit ${plan.zeilen.length} Zeilen angelegt`;
+    return { ergebnis: text, chat: text };
+  },
+
+  zeile_aendern(args) {
+    const nr = Number(args.nr);
+    const zeile = plan.zeilen.find(z => z.nr === nr);
+    if (!zeile) {
+      const vorhanden = plan.zeilen.length ? `Vorhanden sind die Nr. 1 bis ${plan.zeilen.length}.` : "Es gibt noch keinen Plan.";
+      return fehler(`Zeile ${args.nr} existiert nicht. ${vorhanden}`);
+    }
+    const geaendert = FELDER.filter(f => typeof args[f] === "string" && args[f].trim() !== "");
+    if (!geaendert.length) return fehler(`Für Zeile ${nr} wurde kein Feld zum Ändern übergeben.`);
+    geaendert.forEach(f => { zeile[f] = args[f].trim(); });
+    zuletztGeaendert = { nr, felder: geaendert };
+    renderTabelle();
+    return {
+      ergebnis: JSON.stringify(zeile),
+      chat: `Zeile ${nr} geändert (${geaendert.join(", ")})`
+    };
+  }
+};
+
+function fehler(text) {
+  return { ergebnis: "FEHLER: " + text, chat: "Fehler: " + text };
+}
+
+/* =====================================================================
+   5) ANZEIGE: Tabelle aus dem Datenobjekt neu zeichnen
+   ===================================================================== */
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function renderTabelle() {
+  const ws = document.getElementById("workspace");
+  if (!plan.zeilen.length) {
+    ws.innerHTML = `<div class="empty">Noch kein Plan vorhanden. Beschreibe links dein Change-Projekt und den Go-live-Termin.</div>`;
+    return;
+  }
+  const kopf = `<tr><th>Nr.</th><th>Zielgruppe</th><th>Kanal</th><th>Zeitpunkt</th><th>Botschaft</th></tr>`;
+  const zeilen = plan.zeilen.map(z => {
+    const zelle = f => {
+      const markiert = zuletztGeaendert.nr === z.nr && zuletztGeaendert.felder.includes(f);
+      return `<td class="${markiert ? "changed" : ""}">${esc(z[f])}</td>`;
+    };
+    return `<tr><td class="nr">${z.nr}</td>${zelle("zielgruppe")}${zelle("kanal")}${zelle("zeitpunkt")}${zelle("botschaft")}</tr>`;
+  }).join("");
+  ws.innerHTML = `<h3 id="planTitle">${esc(plan.projekt_titel)}</h3><table><thead>${kopf}</thead><tbody>${zeilen}</tbody></table>`;
+}
+
+/* =====================================================================
+   6) CHAT-Anzeige
+   ===================================================================== */
+function chat(rolle, text) {
+  const log = document.getElementById("chatLog");
+  const div = document.createElement("div");
+  div.className = "msg " + rolle;
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+/* =====================================================================
+   7) ABLAUF (Agenten-Schleife)
+   ---------------------------------------------------------------------
+   Auftrag + aktuelle Tabelle ans Modell -> Modell ruft Tool -> App führt
+   aus -> Tabelle neu zeichnen -> Ergebnis zurück ans Modell -> ...
+   bis das Modell kein Tool mehr aufruft (max. 5 Tool-Aufrufe).
+   ===================================================================== */
+const verlauf = []; // bisherige Chat-Texte (ohne Tabelle), damit Rückfragen funktionieren
+
+async function auftragAusfuehren(auftrag) {
+  const apiKey = document.getElementById("apiKey").value.trim();
+  const modell = document.getElementById("model").value.trim();
+  if (!apiKey) { chat("error", "Bitte oben einen OpenAI-API-Key eintragen."); return; }
+  if (!modell) { chat("error", "Bitte oben einen Modellnamen eintragen."); return; }
+
+  const userNachricht = {
+    role: "user",
+    content: `Auftrag:\n${auftrag}\n\nAktuelle Tabelle (JSON):\n${JSON.stringify(plan, null, 2)}`
+  };
+  const messages = [{ role: "system", content: SYSTEMPROMPT }, ...verlauf, userNachricht];
+
+  let toolAufrufe = 0;
+  for (let runde = 0; runde < MAX_TOOL_AUFRUFE + 2; runde++) {
+    const limitErreicht = toolAufrufe >= MAX_TOOL_AUFRUFE;
+    const antwort = await openaiAufrufen(apiKey, modell, messages, limitErreicht);
+    if (!antwort) return; // Fehler wurde bereits im Chat angezeigt
+
+    const msg = antwort.choices?.[0]?.message;
+    if (!msg) { chat("error", "Unerwartete Antwort der API (keine Nachricht enthalten)."); return; }
+    messages.push(msg);
+
+    const calls = msg.tool_calls || [];
+    if (!calls.length) {
+      // Kein Tool mehr -> Durchlauf beendet
+      const text = (msg.content || "").trim() || "(Keine Textantwort.)";
+      chat("assistant", text);
+      verlauf.push({ role: "user", content: auftrag }, { role: "assistant", content: text });
+      return;
+    }
+
+    for (const call of calls) {
+      let ergebnis;
+      if (toolAufrufe >= MAX_TOOL_AUFRUFE) {
+        ergebnis = "FEHLER: Limit von 5 Tool-Aufrufen pro Auftrag erreicht. Nicht ausgeführt.";
+        chat("tool", `Tool: ${call.function?.name} → nicht ausgeführt (Limit von ${MAX_TOOL_AUFRUFE} erreicht)`);
+      } else {
+        toolAufrufe++;
+        ergebnis = toolAusfuehren(call);
+      }
+      messages.push({ role: "tool", tool_call_id: call.id, content: ergebnis });
+    }
+  }
+  chat("error", "Durchlauf abgebrochen: Das Modell hat nach dem Tool-Limit keine Abschlussantwort geliefert.");
+}
+
+function toolAusfuehren(call) {
+  const name = call.function?.name;
+  let args;
+  try { args = JSON.parse(call.function?.arguments || "{}"); }
+  catch { chat("tool", `Tool: ${name} → Fehler: Argumente waren kein gültiges JSON`); return "FEHLER: Argumente waren kein gültiges JSON."; }
+
+  const tool = TOOLS[name];
+  if (!tool) { chat("tool", `Tool: ${name} → Fehler: unbekanntes Tool`); return `FEHLER: Unbekanntes Tool "${name}".`; }
+
+  const r = tool(args);
+  chat("tool", `Tool: ${name} → ${r.chat}`);
+  return r.ergebnis;
+}
+
+/* =====================================================================
+   8) VERBINDUNG zur OpenAI-API (Chat Completions)
+   ===================================================================== */
+async function openaiAufrufen(apiKey, modell, messages, keineToolsMehr) {
+  const body = { model: modell, messages, tools: TOOL_DEFINITIONEN, tool_choice: keineToolsMehr ? "none" : "auto" };
+  let res;
+  try {
+    res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + apiKey },
+      body: JSON.stringify(body)
+    });
+  } catch (e) {
+    chat("error", "Keine Verbindung zur OpenAI-API. Internetverbindung prüfen. (" + e.message + ")");
+    return null;
+  }
+  let daten = null;
+  try { daten = await res.json(); } catch { /* Antwort war kein JSON */ }
+  if (!res.ok) {
+    const detail = daten?.error?.message || res.statusText || "unbekannter Fehler";
+    const hilfe = {
+      401: "Der API-Key ist ungültig oder fehlt.",
+      403: "Kein Zugriff auf dieses Modell oder diese Funktion.",
+      404: "Das Modell wurde nicht gefunden. Modellnamen prüfen.",
+      429: "Zu viele Anfragen oder kein Guthaben mehr auf dem OpenAI-Konto."
+    }[res.status] || "Die API hat einen Fehler gemeldet.";
+    chat("error", `API-Fehler ${res.status}: ${hilfe}\nDetails: ${detail}`);
+    return null;
+  }
+  return daten;
+}
+
+/* =====================================================================
+   9) BEDIENUNG: Senden-Button, Enter-Taste, Beispielaufträge
+   ===================================================================== */
+const BEISPIELE = {
+  1: "Wir führen am 1. März einen neuen Performance-Management-Prozess für 2.000 Mitarbeitende ein. Betroffen sind Führungskräfte, Mitarbeitende und der Betriebsrat. Erstelle einen Kommunikationsplan.",
+  2: "Der Betriebsrat soll eine Woche früher informiert werden und die Botschaft soll kürzer sein."
+};
+
+let laeuft = false;
+async function senden() {
+  const input = document.getElementById("chatInput");
+  const text = input.value.trim();
+  if (!text || laeuft) return;
+  laeuft = true;
+  const btn = document.getElementById("sendBtn");
+  btn.disabled = true; btn.textContent = "Arbeitet …";
+  input.value = "";
+  chat("user", text);
+  try { await auftragAusfuehren(text); }
+  catch (e) { chat("error", "Unerwarteter Fehler: " + e.message); }
+  finally { laeuft = false; btn.disabled = false; btn.textContent = "Senden"; input.focus(); }
+}
+
+document.getElementById("sendBtn").addEventListener("click", senden);
+document.getElementById("chatInput").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); senden(); }
+});
+document.querySelectorAll("[data-example]").forEach(b =>
+  b.addEventListener("click", () => {
+    const input = document.getElementById("chatInput");
+    input.value = BEISPIELE[b.dataset.example];
+    input.focus();
+  })
+);
+
+chat("info", "API-Key oben eintragen, dann einen Auftrag senden.");
+renderTabelle();
+</script>
+</body>
+</html>
